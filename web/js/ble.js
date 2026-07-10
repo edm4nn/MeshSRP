@@ -88,6 +88,14 @@ class BleUart extends EventTarget {
     await this.txChar.startNotifications();
     this.txChar.addEventListener("characteristicvaluechanged", (ev) => this._onNotify(ev));
 
+    // Margine per lasciare che un eventuale bonding di sistema (Android,
+    // alla primissima connessione a un device non ancora bondato) finisca
+    // prima che WHOAMI parta: altrimenti lo stack GATT del telefono può
+    // rifiutare la scrittura con "operation already in progress" perché
+    // è ancora occupato lui, non per una nostra race interna (quella è
+    // già serializzata da _enqueue).
+    await new Promise((r) => setTimeout(r, 300));
+
     this._lineBuffer = "";
     this.connected = true;
     this.dispatchEvent(new CustomEvent("connected"));
@@ -126,7 +134,18 @@ class BleUart extends EventTarget {
       }
       return;
     }
-    // Notifica non sollecitata (es. "ID ..." automatico alla connessione).
+    // "ID ..." è automatica alla connessione (da contratto): la
+    // intercettiamo qui per evitare che ogni modulo interessato debba
+    // interrogare di nuovo il nodo con un proprio WHOAMI — un secondo
+    // comando concorrente non serve e su alcuni device è bastato a far
+    // cadere la connessione appena stabilita.
+    const idMatch = /^ID (\d+) (.+)$/.exec(line);
+    if (idMatch) {
+      this.dispatchEvent(
+        new CustomEvent("identity", { detail: { id: idMatch[1], name: idMatch[2] } })
+      );
+    }
+
     this.dispatchEvent(new CustomEvent("line", { detail: line }));
   }
 
@@ -134,7 +153,21 @@ class BleUart extends EventTarget {
     if (!this.connected || !this.rxChar) throw new Error("BLE non connesso");
     const bytes = new TextEncoder().encode(line + "\n");
     for (let offset = 0; offset < bytes.length; offset += WRITE_CHUNK) {
-      await this.rxChar.writeValueWithoutResponse(bytes.slice(offset, offset + WRITE_CHUNK));
+      await this._writeChunkWithRetry(bytes.slice(offset, offset + WRITE_CHUNK));
+    }
+  }
+
+  // "GATT operation already in progress" e simili sono transitori (lo
+  // stack Bluetooth del telefono è temporaneamente occupato, es. bonding
+  // di sistema in corso): ritenta con un piccolo backoff invece di
+  // fallire subito al primo colpo.
+  async _writeChunkWithRetry(chunk, attempt = 0) {
+    try {
+      await this.rxChar.writeValueWithoutResponse(chunk);
+    } catch (err) {
+      if (attempt >= 3) throw err;
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+      return this._writeChunkWithRetry(chunk, attempt + 1);
     }
   }
 
