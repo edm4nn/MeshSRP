@@ -17,6 +17,22 @@ class BleUart extends EventTarget {
     this.connected = false;
     this._lineBuffer = "";
     this._pending = [];
+    // Il Web Bluetooth dello stack browser accetta una sola operazione
+    // GATT alla volta per device: sendCommand/getBuf possono essere
+    // chiamati concorrentemente da moduli diversi (settings.js, app.js,
+    // messaging.js), quindi li seriamo tutti su questa catena invece di
+    // lasciare che le loro writeValueWithoutResponse si accavallino
+    // ("GATT operation already in progress").
+    this._commandChain = Promise.resolve();
+  }
+
+  _enqueue(taskFn) {
+    const result = this._commandChain.then(taskFn, taskFn);
+    this._commandChain = result.then(
+      () => {},
+      () => {}
+    );
+    return result;
   }
 
   // Deve essere chiamato da un gesto utente (tap su "Collega nodo").
@@ -27,7 +43,18 @@ class BleUart extends EventTarget {
     this.device = device;
     device.addEventListener("gattserverdisconnected", () => this._onDisconnected());
     await this._doConnect();
+    this._drainBuffer();  // potrebbero già esserci pacchetti in coda dal boot del nodo
     return device;
+  }
+
+  // GETBUF e inoltro di ogni pacchetto scaricato come evento "rxpkt".
+  async _drainBuffer() {
+    try {
+      const { packets } = await this.getBuf();
+      for (const hex of packets) this.dispatchEvent(new CustomEvent("rxpkt", { detail: hex }));
+    } catch (err) {
+      // silenzioso: si ritenta alla prossima connessione/riconnessione
+    }
   }
 
   // Riconnette a un device già autorizzato in questa sessione, senza un
@@ -125,7 +152,11 @@ class BleUart extends EventTarget {
 
   // Comandi a risposta singola: WHOAMI, SET_NODE_ID, SET_PRESET,
   // SET_TRANSPORT, STATUS, TXPKT.
-  async sendCommand(line, { timeoutMs = 4000 } = {}) {
+  sendCommand(line, opts) {
+    return this._enqueue(() => this._sendCommandNow(line, opts));
+  }
+
+  async _sendCommandNow(line, { timeoutMs = 4000 } = {}) {
     const pending = this._queueRequest((lines) => lines.length >= 1, timeoutMs);
     await this._write(line);
     const lines = await pending;
@@ -133,7 +164,11 @@ class BleUart extends EventTarget {
   }
 
   // GETBUF: "BUF <n>" seguito da n righe "RXPKT <hex>".
-  async getBuf({ timeoutMs = 8000 } = {}) {
+  getBuf(opts) {
+    return this._enqueue(() => this._getBufNow(opts));
+  }
+
+  async _getBufNow({ timeoutMs = 8000 } = {}) {
     const pending = this._queueRequest((lines) => {
       if (lines.length === 0) return false;
       const m = /^BUF (\d+)$/.exec(lines[0]);
@@ -159,6 +194,6 @@ document.addEventListener("visibilitychange", () => {
   if (!ble.device || ble.connected) return;
 
   ble.reconnect().then((ok) => {
-    if (ok) ble.getBuf().catch(() => {});
+    if (ok) ble._drainBuffer();
   });
 });
