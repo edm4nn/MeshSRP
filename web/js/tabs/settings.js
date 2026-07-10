@@ -88,19 +88,29 @@ export async function mount(container) {
   highlightPill("#preset-group", "preset", savedPreset);
   highlightPill("#transport-group", "transport", savedTransport);
 
-  async function refreshWhoami() {
+  async function applyIdentity(node) {
+    infoId.textContent = node.id;
+    infoName.textContent = node.name;
+    await setSetting("lastKnownNode", node);
+    pairingGroup.hidden = node.name !== "UNCONFIGURED";
+  }
+
+  // Il nodo manda "ID ..." da solo a ogni connessione (contratto BLE):
+  // ci basta ascoltarlo, non serve interrogarlo di nuovo con un WHOAMI
+  // attivo (due comandi concorrenti alla connessione hanno fatto cadere
+  // la connessione su alcuni device).
+  const onIdentity = (ev) => applyIdentity(ev.detail);
+
+  // Unica eccezione: dopo un SET_NODE_ID riuscito il nodo non manda una
+  // nuova notifica automatica, quindi qui un WHOAMI esplicito serve
+  // davvero (nessun altro comando è in volo in quel momento).
+  async function refreshWhoamiAfterPairing() {
     try {
       const line = await ble.sendCommand("WHOAMI");
       const m = /^ID (\d+) (.+)$/.exec(line);
-      if (m) {
-        const node = { id: m[1], name: m[2] };
-        infoId.textContent = node.id;
-        infoName.textContent = node.name;
-        await setSetting("lastKnownNode", node);
-        pairingGroup.hidden = node.name !== "UNCONFIGURED";
-      }
+      if (m) await applyIdentity({ id: m[1], name: m[2] });
     } catch (err) {
-      setStatus(connectStatus, `Errore WHOAMI: ${err.message}`, "error");
+      setStatus(pairStatus, `Errore WHOAMI: ${err.message}`, "error");
     }
   }
 
@@ -110,7 +120,6 @@ export async function mount(container) {
     infoBle.classList.toggle("connected", connected);
     btnConnect.hidden = connected;
     btnDisconnect.hidden = !connected;
-    if (connected) refreshWhoami();
   }
 
   btnConnect.addEventListener("click", async () => {
@@ -142,7 +151,7 @@ export async function mount(container) {
       const reply = await ble.sendCommand(`SET_NODE_ID ${id} ${name} ${code}`);
       if (reply === "OK") {
         setStatus(pairStatus, "Nodo provisionato.", "ok");
-        await refreshWhoami();
+        await refreshWhoamiAfterPairing();
       } else {
         setStatus(pairStatus, `Rifiutato dal nodo: ${reply}`, "error");
       }
@@ -217,6 +226,7 @@ export async function mount(container) {
 
   ble.addEventListener("connected", onConnected);
   ble.addEventListener("disconnected", onDisconnected);
+  ble.addEventListener("identity", onIdentity);
 
   updateConnectionUi();
 
@@ -224,6 +234,7 @@ export async function mount(container) {
     onUnmount() {
       ble.removeEventListener("connected", onConnected);
       ble.removeEventListener("disconnected", onDisconnected);
+      ble.removeEventListener("identity", onIdentity);
     },
   };
 }
