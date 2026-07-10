@@ -1,0 +1,19 @@
+{
+  "name": "MeshSRP",
+  "short_name": "MeshSRP",
+  "description": "Comunicazione di squadra offline su mesh LoRa + ESP-NOW",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08090a",
+  "theme_color": "#0d0f0d",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
