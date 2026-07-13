@@ -1,5 +1,7 @@
 # MeshSRP — PWA
 
+<img src="icons/icon-512.png" alt="MeshSRP logo" width="150" height="150">
+
 ## Prima di provarla: requisito HTTPS
 
 Web Bluetooth funziona solo in un **contesto sicuro**: HTTPS, oppure `localhost`
