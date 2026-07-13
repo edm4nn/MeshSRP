@@ -1,4 +1,4 @@
-# LoRa Chat — PWA
+# MeshSRP — PWA
 
 ## Prima di provarla: requisito HTTPS
 

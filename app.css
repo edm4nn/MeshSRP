@@ -1,13 +1,13 @@
 :root{
-  --bg:#0b0f14;
-  --panel:#11171f;
-  --panel2:#161d27;
-  --grid:#1e2731;
-  --accent:#7ee08a;
+  --bg:#151915;
+  --panel:#1a1f1a;
+  --panel2:#20261f;
+  --grid:#2a2f2a;
+  --accent:#6fcf6f;
   --accent2:#ff6b9d;
-  --warn:#ffb454;
-  --text:#dfe7ee;
-  --muted:#8595a6;
+  --warn:#e0a458;
+  --text:#e6e8e3;
+  --muted:#7a8279;
   --mono: 'SF Mono','Consolas','Menlo',monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }

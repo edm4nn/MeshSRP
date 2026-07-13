@@ -473,6 +473,14 @@ async function sendMessage() {
     el.querySelector('.msg-status').textContent = 'in coda...';
     el._statusEl = el.querySelector('.msg-status');
     state._lastSentEl = el;
+
+    // rete di sicurezza: se l'ack non arriva entro pochi secondi, segnalalo
+    // invece di lasciare il messaggio bloccato su "in coda..." senza spiegazione
+    setTimeout(() => {
+      if (el._statusEl.textContent === 'in coda...') {
+        el._statusEl.textContent = '⚠ nessuna risposta dal nodo';
+      }
+    }, 6000);
   } catch (err) {
     el.querySelector('.msg-status').textContent = '✗ errore invio';
   }
