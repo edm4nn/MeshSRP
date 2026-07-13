@@ -12,6 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 </head>
 <body>
 <div id="phone">
@@ -67,6 +68,45 @@
       <input type="text" id="msg-input" placeholder="Scrivi un messaggio..." maxlength="160">
       <button class="send-btn" id="btn-send">➤</button>
     </div>
+
+    <div class="tabbar">
+      <button class="tab-btn active" data-view="chat">💬<span>Chat</span></button>
+      <button class="tab-btn" data-view="map">🗺<span>Mappa</span></button>
+    </div>
+  </div>
+
+  <div class="screen" id="screen-map">
+    <div class="topbar">
+      <div class="brand">
+        <span class="dot" id="conn-dot-map"></span>
+        <div>
+          <div class="brand-name">Posizioni</div>
+          <div class="brand-sub" id="map-peers-sub">0 nodi con posizione</div>
+        </div>
+      </div>
+      <div class="icon-btn" id="btn-settings-map">⚙</div>
+    </div>
+
+    <div class="map-mode-switch">
+      <button class="map-mode-btn active" data-mapmode="radar">Radar tattico</button>
+      <button class="map-mode-btn" data-mapmode="tiles">Mappa</button>
+    </div>
+
+    <div class="map-content">
+      <div id="radar-view" class="map-view active">
+        <svg id="radar-svg" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="radar-legend" id="radar-legend"></div>
+      </div>
+      <div id="tiles-view" class="map-view">
+        <div id="leaflet-map"></div>
+      </div>
+      <div class="geo-warning" id="geo-warning" style="display:none;"></div>
+    </div>
+
+    <div class="tabbar">
+      <button class="tab-btn" data-view="chat">💬<span>Chat</span></button>
+      <button class="tab-btn active" data-view="map">🗺<span>Mappa</span></button>
+    </div>
   </div>
 
   <div id="settings-overlay">
@@ -101,6 +141,15 @@
         </div>
       </div>
 
+      <div class="field-label">Posizione</div>
+      <div class="toggle-row" id="toggle-share-location">
+        <div>
+          <div class="toggle-row-title">Condividi posizione</div>
+          <div class="toggle-row-desc">Visibile a chiunque abbia la password di rete. Spento di default.</div>
+        </div>
+        <div class="switch" id="switch-share-location"><div class="switch-knob"></div></div>
+      </div>
+
       <div class="field-label">Dispositivo</div>
       <button class="btn btn-danger" id="btn-forget">Dimentica questo nodo</button>
       <button class="btn btn-secondary" id="btn-disconnect" style="margin-top:8px;">Disconnetti</button>
@@ -112,6 +161,7 @@
 
 <!-- crypto: X25519 (tweetnacl). BLAKE2b è implementato direttamente in app.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.2/nacl.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

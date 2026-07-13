@@ -222,6 +222,82 @@ function parseIncomingChat(plain) {
 }
 
 /* ============================================================================
+   Posizione GPS — viaggia come un normale messaggio di chat con un prefisso
+   riconoscibile, cifrato/instradato esattamente come il testo: nessuna modifica
+   al firmware necessaria. La PWA lo intercetta prima di mostrarlo come chat.
+   ============================================================================ */
+
+const GEO_PREFIX = 'GEO:';
+const POSITION_BROADCAST_INTERVAL_MS = 45000; // non ad ogni variazione: rispetta il duty cycle
+
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180;
+  const toDeg = r => r * 180 / Math.PI;
+  const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function formatDistance(m) {
+  return m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km';
+}
+
+function loadShareLocationPref() { return localStorage.getItem('shareLocation') === '1'; }
+function setShareLocationPref(v) { localStorage.setItem('shareLocation', v ? '1' : '0'); }
+
+function initGeolocation() {
+  if (!navigator.geolocation || state.geoWatchId != null) return;
+  state.geoWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      state.myPosition = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      document.getElementById('geo-warning').style.display = 'none';
+      refreshMapViews();
+    },
+    (err) => {
+      const w = document.getElementById('geo-warning');
+      w.style.display = 'block';
+      w.textContent = 'Posizione non disponibile: ' + err.message;
+    },
+    { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+  );
+}
+
+function startPositionBroadcast() {
+  if (state.positionBroadcastTimer) return;
+  state.positionBroadcastTimer = setInterval(() => {
+    if (state.shareLocation && state.myPosition) {
+      const { lat, lon } = state.myPosition;
+      sendChatText(GEO_PREFIX + lat.toFixed(5) + ',' + lon.toFixed(5), { visible: false });
+    }
+  }, POSITION_BROADCAST_INTERVAL_MS);
+}
+function stopPositionBroadcast() {
+  if (state.positionBroadcastTimer) { clearInterval(state.positionBroadcastTimer); state.positionBroadcastTimer = null; }
+}
+
+function handleIncomingPosition(msg) {
+  const parts = msg.text.slice(GEO_PREFIX.length).split(',');
+  const lat = parseFloat(parts[0]);
+  const lon = parseFloat(parts[1]);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+
+  state.peersSeen.add(msg.nickname);
+  document.getElementById('meta-peers').textContent = state.peersSeen.size;
+
+  state.positions.set(msg.nickname, { lat, lon, rssi: msg.rssi, snr: msg.snr, lastSeen: Date.now() });
+  refreshMapViews();
+}
+
+/* ============================================================================
    Stato applicazione
    ============================================================================ */
 
@@ -236,6 +312,12 @@ const state = {
   sessionSalt: null,
   paired: false,
   peersSeen: new Set(),
+  positions: new Map(),        // nickname -> {lat, lon, rssi, snr, lastSeen}
+  myPosition: null,
+  geoWatchId: null,
+  shareLocation: loadShareLocationPref(),
+  positionBroadcastTimer: null,
+  mapMode: 'radar',
 };
 
 /* ============================================================================
@@ -246,6 +328,7 @@ const screens = {
   connect: document.getElementById('screen-connect'),
   pair: document.getElementById('screen-pair'),
   chat: document.getElementById('screen-chat'),
+  map: document.getElementById('screen-map'),
 };
 function showScreen(name) {
   Object.values(screens).forEach(s => s.classList.remove('active'));
@@ -396,12 +479,6 @@ function toHexDbg(bytes) {
 
 async function recomputeSessionKey() {
   state.sessionKey = kdf(32, state.sharedSecret, state.sessionSalt, 'session-key|');
-  console.log('[DEBUG] === recomputeSessionKey ===');
-  console.log('[DEBUG] myKeys.pub:', toHexDbg(state.myKeys.pub));
-  console.log('[DEBUG] nodePub:', toHexDbg(state.nodePub));
-  console.log('[DEBUG] sharedSecret:', toHexDbg(state.sharedSecret));
-  console.log('[DEBUG] sessionSalt:', toHexDbg(state.sessionSalt));
-  console.log('[DEBUG] sessionKey:', toHexDbg(state.sessionKey));
 }
 
 function onSessionSaltChanged(event) {
@@ -421,6 +498,7 @@ function onSessionSaltChanged(event) {
 }
 
 function onDisconnected() {
+  stopPositionBroadcast();
   toast('Disconnesso dal nodo');
   showScreen('connect');
   document.getElementById('connect-status').textContent = '';
@@ -473,6 +551,11 @@ async function enterChat() {
     document.getElementById('nick-input').value = nick;
   } catch (e) {}
 
+  // riflette il toggle "condividi posizione" salvato e riavvia il broadcast se attivo
+  document.getElementById('switch-share-location').classList.toggle('on', state.shareLocation);
+  if (state.shareLocation) startPositionBroadcast();
+
+  updateTabActive('chat');
   showScreen('chat');
 }
 
@@ -484,34 +567,42 @@ document.getElementById('msg-input').addEventListener('keydown', e => {
 async function sendMessage() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
-  if (!text || !state.sessionKey) return;
+  if (!text) return;
   input.value = '';
+  await sendChatText(text, { visible: true });
+}
 
-  const el = addMessageToUI({ own: true, text, status: 'invio...' });
+// riusata anche per gli aggiornamenti di posizione (visible:false = non compare in chat)
+async function sendChatText(text, opts) {
+  const visible = opts && opts.visible;
+  if (!text || !state.sessionKey) return false;
+
+  let el = null;
+  if (visible) el = addMessageToUI({ own: true, text, status: 'invio...' });
 
   try {
     const plaintext = new TextEncoder().encode(text);
     const packet = await aesEncrypt(state.sessionKey, plaintext);
-    console.log('[DEBUG] === sendMessage ===');
-    console.log('[DEBUG] sessionKey usata per cifrare:', toHexDbg(state.sessionKey));
-    console.log('[DEBUG] pacchetto:', packet.length, 'byte, nonce:', toHexDbg(packet.slice(0, 12)), 'tag:', toHexDbg(packet.slice(-16)));
     await state.chChatTx.writeValue(packet);
-    // la conferma definitiva arriva su chStatus (onStatusNotification):
-    // qui segnamo solo che e' stato scritto sul canale BLE
-    el.dataset.pending = '1';
-    el.querySelector('.msg-status').textContent = 'in coda...';
-    el._statusEl = el.querySelector('.msg-status');
-    state._lastSentEl = el;
 
-    // rete di sicurezza: se l'ack non arriva entro pochi secondi, segnalalo
-    // invece di lasciare il messaggio bloccato su "in coda..." senza spiegazione
-    setTimeout(() => {
-      if (el._statusEl.textContent === 'in coda...') {
-        el._statusEl.textContent = '⚠ nessuna risposta dal nodo';
-      }
-    }, 6000);
+    if (visible) {
+      el.dataset.pending = '1';
+      el._statusEl = el.querySelector('.msg-status');
+      el._statusEl.textContent = 'in coda...';
+      state._lastSentEl = el;
+
+      // rete di sicurezza: se l'ack non arriva entro pochi secondi, segnalalo
+      // invece di lasciare il messaggio bloccato su "in coda..." senza spiegazione
+      setTimeout(() => {
+        if (el._statusEl.textContent === 'in coda...') {
+          el._statusEl.textContent = '⚠ nessuna risposta dal nodo';
+        }
+      }, 6000);
+    }
+    return true;
   } catch (err) {
-    el.querySelector('.msg-status').textContent = '✗ errore invio';
+    if (visible) el.querySelector('.msg-status').textContent = '✗ errore invio';
+    return false;
   }
 }
 
@@ -530,6 +621,11 @@ async function onChatMessageReceived(event) {
     const plain = await aesDecrypt(state.sessionKey, packet);
     const msg = parseIncomingChat(plain);
 
+    if (msg.text.startsWith(GEO_PREFIX)) {
+      handleIncomingPosition(msg);
+      return;
+    }
+
     state.peersSeen.add(msg.nickname);
     document.getElementById('meta-peers').textContent = state.peersSeen.size;
 
@@ -545,6 +641,7 @@ async function onChatMessageReceived(event) {
 
 const overlay = document.getElementById('settings-overlay');
 document.getElementById('btn-settings').addEventListener('click', () => overlay.classList.add('active'));
+document.getElementById('btn-settings-map').addEventListener('click', () => overlay.classList.add('active'));
 overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.remove('active'); });
 
 function selectSfOption(sf) {
@@ -579,9 +676,25 @@ document.getElementById('nick-input').addEventListener('change', async (e) => {
   }
 });
 
+document.getElementById('toggle-share-location').addEventListener('click', () => {
+  state.shareLocation = !state.shareLocation;
+  setShareLocationPref(state.shareLocation);
+  document.getElementById('switch-share-location').classList.toggle('on', state.shareLocation);
+
+  if (state.shareLocation) {
+    initGeolocation();
+    startPositionBroadcast();
+    toast('Condivisione posizione attivata');
+  } else {
+    stopPositionBroadcast();
+    toast('Condivisione posizione disattivata');
+  }
+});
+
 document.getElementById('btn-forget').addEventListener('click', () => {
   forgetTrustedNode();
   overlay.classList.remove('active');
+  stopPositionBroadcast();
   if (state.device && state.device.gatt.connected) state.device.gatt.disconnect();
   showScreen('connect');
   toast('Nodo dimenticato (ricorda di dimenticarlo anche premendo a lungo il pulsante sul nodo)');
@@ -589,8 +702,198 @@ document.getElementById('btn-forget').addEventListener('click', () => {
 
 document.getElementById('btn-disconnect').addEventListener('click', () => {
   overlay.classList.remove('active');
+  stopPositionBroadcast();
   if (state.device && state.device.gatt.connected) state.device.gatt.disconnect();
 });
+
+/* ============================================================================
+   Tab bar (Chat / Mappa)
+   ============================================================================ */
+
+function updateTabActive(view) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const view = btn.dataset.view;
+    updateTabActive(view);
+    showScreen(view);
+    if (view === 'map') {
+      initGeolocation(); // vedere se stessi sul radar non richiede di condividere la posizione
+      if (state.mapMode === 'tiles') ensureLeafletMap();
+      refreshMapViews();
+    }
+  });
+});
+
+document.querySelectorAll('.map-mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset.mapmode;
+    document.querySelectorAll('.map-mode-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.getElementById('radar-view').classList.toggle('active', mode === 'radar');
+    document.getElementById('tiles-view').classList.toggle('active', mode === 'tiles');
+    state.mapMode = mode;
+    if (mode === 'tiles') { ensureLeafletMap(); refreshLeafletMarkers(); }
+    else renderRadar();
+  });
+});
+
+/* ============================================================================
+   Vista Radar tattico — nessuna mappa di sfondo, solo distanza/direzione
+   relativa: funziona sempre, anche completamente offline.
+   ============================================================================ */
+
+function renderRadar() {
+  const svg = document.getElementById('radar-svg');
+  const legend = document.getElementById('radar-legend');
+  const NS = 'http://www.w3.org/2000/svg';
+  svg.innerHTML = '';
+  const cx = 160, cy = 160, maxR = 140;
+
+  const withDist = [];
+  let maxDist = 100; // floor, evita uno zoom assurdo con nodi vicinissimi
+  if (state.myPosition) {
+    for (const [nick, p] of state.positions.entries()) {
+      const d = haversineDistance(state.myPosition.lat, state.myPosition.lon, p.lat, p.lon);
+      const b = bearingDeg(state.myPosition.lat, state.myPosition.lon, p.lat, p.lon);
+      withDist.push({ nick, dist: d, bearing: b, lastSeen: p.lastSeen });
+      if (d > maxDist) maxDist = d;
+    }
+  }
+  maxDist *= 1.15;
+
+  [1 / 3, 2 / 3, 1].forEach(f => {
+    const r = maxR * f;
+    const circle = document.createElementNS(NS, 'circle');
+    circle.setAttribute('cx', cx); circle.setAttribute('cy', cy); circle.setAttribute('r', r);
+    circle.setAttribute('class', 'radar-ring');
+    svg.appendChild(circle);
+    const label = document.createElementNS(NS, 'text');
+    label.setAttribute('x', cx + 4); label.setAttribute('y', cy - r - 2);
+    label.setAttribute('class', 'radar-ring-label');
+    label.textContent = formatDistance(maxDist * f);
+    svg.appendChild(label);
+  });
+
+  [[cx - maxR, cy, cx + maxR, cy], [cx, cy - maxR, cx, cy + maxR]].forEach(([x1, y1, x2, y2]) => {
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+    line.setAttribute('class', 'radar-crosshair');
+    svg.appendChild(line);
+  });
+
+  const nLabel = document.createElementNS(NS, 'text');
+  nLabel.setAttribute('x', cx - 4); nLabel.setAttribute('y', cy - maxR - 6);
+  nLabel.setAttribute('class', 'radar-ring-label');
+  nLabel.textContent = 'N';
+  svg.appendChild(nLabel);
+
+  const self = document.createElementNS(NS, 'rect');
+  self.setAttribute('x', cx - 6); self.setAttribute('y', cy - 6);
+  self.setAttribute('width', 12); self.setAttribute('height', 12);
+  self.setAttribute('transform', `rotate(45 ${cx} ${cy})`);
+  self.setAttribute('class', 'radar-self');
+  svg.appendChild(self);
+
+  withDist.forEach(p => {
+    const angleRad = (p.bearing - 90) * Math.PI / 180; // 0deg=N in alto
+    const r = (p.dist / maxDist) * maxR;
+    const x = cx + r * Math.cos(angleRad);
+    const y = cy + r * Math.sin(angleRad);
+
+    const ageMin = (Date.now() - p.lastSeen) / 60000;
+    const color = ageMin < 5 ? 'var(--accent)' : ageMin < 20 ? 'var(--warn)' : 'var(--muted)';
+
+    const dot = document.createElementNS(NS, 'rect');
+    dot.setAttribute('x', x - 5); dot.setAttribute('y', y - 5);
+    dot.setAttribute('width', 10); dot.setAttribute('height', 10);
+    dot.setAttribute('transform', `rotate(45 ${x} ${y})`);
+    dot.setAttribute('fill', 'var(--bg)');
+    dot.setAttribute('stroke', color);
+    dot.setAttribute('class', 'radar-peer-dot');
+    svg.appendChild(dot);
+
+    const label = document.createElementNS(NS, 'text');
+    label.setAttribute('x', x + 9); label.setAttribute('y', y + 3);
+    label.setAttribute('class', 'radar-peer-label');
+    label.textContent = `${p.nick} · ${formatDistance(p.dist)}`;
+    svg.appendChild(label);
+  });
+
+  legend.textContent = state.myPosition
+    ? `${withDist.length} nodi con posizione nota`
+    : 'In attesa del GPS del telefono... (consenti l\'accesso quando richiesto)';
+
+  document.getElementById('map-peers-sub').textContent = `${withDist.length} nodi con posizione`;
+}
+
+/* ============================================================================
+   Vista Mappa — Leaflet con un layer offline "a griglia" (nessuna tile da
+   internet). Per usare tile reali, scarica un set per la tua zona (es. con
+   QGIS o un tile downloader offline) e sostituisci il layer con:
+     L.tileLayer('tiles/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(leafletMap)
+   ============================================================================ */
+
+let leafletMap = null;
+const leafletMarkers = new Map();
+
+function ensureLeafletMap() {
+  if (leafletMap) { setTimeout(() => leafletMap.invalidateSize(), 50); return; }
+  if (typeof L === 'undefined') return;
+
+  const center = state.myPosition ? [state.myPosition.lat, state.myPosition.lon] : [0, 0];
+  leafletMap = L.map('leaflet-map', { attributionControl: false }).setView(center, state.myPosition ? 15 : 2);
+
+  const GraticuleLayer = L.GridLayer.extend({
+    createTile: function (coords) {
+      const tile = document.createElement('canvas');
+      const size = this.getTileSize();
+      tile.width = size.x; tile.height = size.y;
+      const ctx = tile.getContext('2d');
+      ctx.fillStyle = '#1a1f1a';
+      ctx.fillRect(0, 0, size.x, size.y);
+      ctx.strokeStyle = '#2a2f2a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0.5, 0.5, size.x - 1, size.y - 1);
+      ctx.fillStyle = '#3a423a';
+      ctx.font = '9px monospace';
+      ctx.fillText(coords.z + '/' + coords.x + '/' + coords.y, 4, 12);
+      return tile;
+    }
+  });
+  new GraticuleLayer().addTo(leafletMap);
+}
+
+function refreshLeafletMarkers() {
+  if (!leafletMap) return;
+
+  if (state.myPosition) {
+    if (!leafletMarkers.has('__self__')) {
+      const icon = L.divIcon({ className: 'geo-marker self', iconSize: [16, 16] });
+      leafletMarkers.set('__self__', L.marker([state.myPosition.lat, state.myPosition.lon], { icon }).addTo(leafletMap).bindPopup('Tu'));
+    } else {
+      leafletMarkers.get('__self__').setLatLng([state.myPosition.lat, state.myPosition.lon]);
+    }
+  }
+
+  for (const [nick, p] of state.positions.entries()) {
+    if (leafletMarkers.has(nick)) {
+      leafletMarkers.get(nick).setLatLng([p.lat, p.lon]);
+    } else {
+      const icon = L.divIcon({ className: 'geo-marker', iconSize: [16, 16] });
+      leafletMarkers.set(nick, L.marker([p.lat, p.lon], { icon }).addTo(leafletMap).bindPopup(nick));
+    }
+  }
+
+  document.getElementById('map-peers-sub').textContent = `${state.positions.size} nodi con posizione`;
+}
+
+function refreshMapViews() {
+  if (state.mapMode === 'radar') renderRadar();
+  else refreshLeafletMarkers();
+}
 
 /* ============================================================================
    Service worker (funzionamento offline)
