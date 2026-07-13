@@ -12,7 +12,6 @@ const APP_SHELL = [
   './icons/icon-192.png',
   './icons/icon-512.png',
   'https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.2/nacl.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/blakejs/1.1.0/blake2b.min.js',
 ];
 
 self.addEventListener('install', (event) => {

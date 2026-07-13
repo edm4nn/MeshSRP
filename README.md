@@ -55,9 +55,11 @@ logica di pairing/cifratura/chat, che è già isolata e riusabile.
 ## Nota sulle librerie crypto usate
 
 - **tweetnacl.js**: implementa X25519 (scalar multiplication su Curve25519)
-  in modo standard e interoperabile con Monocypher lato firmware — stesso
-  algoritmo, stessa clamping, chiavi compatibili.
-- **blakejs**: BLAKE2b, usato per derivare la chiave di sessione e il codice
-  di conferma esattamente come fa il firmware (`crypto_blake2b`).
+  in modo standard e interoperabile con la libreria "Crypto" (Curve25519)
+  usata lato firmware — stesso algoritmo, stessa clamping, chiavi compatibili.
+- **BLAKE2b**: implementazione autonoma dentro `app.js` (niente dipendenza
+  CDN), verificata byte per byte contro `hashlib.blake2b` di Python su più
+  vettori di test — usata per derivare la chiave di sessione e il codice di
+  conferma esattamente come fa il firmware.
 - **AES-256-GCM**: uso l'API nativa del browser (`crypto.subtle`), non serve
   una libreria esterna — è supportata da anni su tutti i browser moderni.
